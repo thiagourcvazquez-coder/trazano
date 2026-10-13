@@ -1,12 +1,30 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const stagePill = (s) =>
   s === "Hoja" ? "leaf" : s === "Procesado" ? "proc" : "packs";
+const fmt = (n) => Number(n).toLocaleString("es-AR");
+
+function Bar({ label, value, max, danger }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <div className="barrow">
+      <div className="barlabel">{label}</div>
+      <div className="bartrack">
+        <div
+          className={`barfill ${danger ? "danger" : ""}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className={`barval ${danger ? "bad" : ""}`}>{fmt(Math.round(value * 100) / 100)}</div>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const [s, setS] = useState(null);
   const [err, setErr] = useState(null);
+  const [sel, setSel] = useState(null); // pack lot seleccionado
 
   useEffect(() => {
     const load = () =>
@@ -19,6 +37,20 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, []);
 
+  const packLots = useMemo(
+    () => (s ? s.batches.filter((b) => b.stageN === 2) : []),
+    [s]
+  );
+  // por defecto: el lote con alerta, si no el último
+  const lot = useMemo(() => {
+    if (!s || packLots.length === 0) return null;
+    if (sel != null) return packLots.find((b) => b.id === sel) || packLots[0];
+    const conAlerta = packLots.find((b) =>
+      s.alerts.some((a) => a.packLotId === b.id)
+    );
+    return conAlerta || packLots[packLots.length - 1];
+  }, [s, packLots, sel]);
+
   if (err)
     return (
       <div className="alert">
@@ -29,46 +61,186 @@ export default function Dashboard() {
         </div>
       </div>
     );
-  if (!s) return <p>Cargando…</p>;
+  if (!s) return <p className="sub">Cargando…</p>;
 
-  const totalKg = s.batches.filter((b) => b.stageN === 0).reduce((a, b) => a + b.kg, 0);
-  const totalPacks = s.batches.filter((b) => b.stageN === 2).reduce((a, b) => a + b.packs, 0);
-  const totalFET = s.contributions.reduce((a, c) => a + parseFloat(c.deposited), 0);
+  // cadena hacia atrás del lote seleccionado
+  const chain = [];
+  if (lot) {
+    let cur = lot;
+    const seen = new Set();
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      chain.unshift(cur);
+      cur = cur.inputs?.length ? s.batches.find((b) => b.id === cur.inputs[0]) : null;
+    }
+  }
+  const leaf = chain.find((b) => b.stageN === 0);
+  const proc = chain.find((b) => b.stageN === 1);
+  const contrib = lot && s.contributions.find((c) => c.packLotId === lot.id);
+  const lotAlerts = lot ? s.alerts.filter((a) => a.packLotId === lot.id) : [];
+
+  const packsEsperados = lot ? Math.floor(lot.kg / s.kgPorPack) : 0;
+  const packsSinDeclarar = Math.max(0, packsEsperados - (lot?.packs || 0));
+  const diferenciaFet = contrib
+    ? Math.max(0, parseFloat(contrib.expected) - parseFloat(contrib.deposited))
+    : 0;
+  const hayDiscrepancia = packsSinDeclarar > 0 || (contrib && contrib.discrepancy);
+  const pctPrecio = lot
+    ? Math.round((1 - parseFloat(lot.pricePerPack) / s.refPricePack) * 100)
+    : 0;
 
   return (
     <>
-      <h1>Panel del inspector</h1>
-      <div className="sub">Cadena de custodia del tabaco · Monad testnet · actualiza cada 3s</div>
-
-      {s.alerts.length > 0 && (
-        <>
-          <h2>⚠ Alertas de inconsistencia</h2>
-          {s.alerts.map((a, i) => (
-            <div className="alert" key={i}>
-              <b>{a.type}</b> — lote #{a.packLotId}
-              <div className="meta">{a.detalle} · atribuido a: {a.actor}</div>
-              {a.onchainTx && (
-                <div className="onchain">
-                  ✓ elevada onchain por el inspector · tx {a.onchainTx.slice(0, 18)}…
-                </div>
-              )}
-            </div>
-          ))}
-        </>
-      )}
-
-      <div className="grid" style={{ marginTop: 16 }}>
-        <div className="kpi"><div className="v">{totalKg.toLocaleString("es-AR")} kg</div><div className="l">Tabaco registrado (hoja)</div></div>
-        <div className="kpi"><div className="v">{totalPacks.toLocaleString("es-AR")}</div><div className="l">Packs declarados</div></div>
-        <div className="kpi"><div className="v">{totalFET.toLocaleString("es-AR")} mUSD</div><div className="l">Aportado al FET</div></div>
-        <div className="kpi"><div className="v" style={{ color: s.alerts.length ? "#ef4444" : "#4ade80" }}>{s.alerts.length}</div><div className="l">Anomalías detectadas</div></div>
+      <div className="hero">
+        <h1>
+          {hayDiscrepancia
+            ? "Lo declarado no cierra con el tabaco que entró"
+            : "La cadena cierra: todo lo declarado tiene respaldo"}
+        </h1>
+        <div className="sub">
+          // lote {lot ? `L-2026-04${lot.id}` : "—"} ·{" "}
+          {lot ? lot.holderName : ""} · Monad testnet · refresh 3s
+        </div>
+        {packLots.length > 1 && (
+          <div className="tabs">
+            {packLots.map((b) => (
+              <button
+                key={b.id}
+                className={`tab ${lot?.id === b.id ? "on" : ""}`}
+                onClick={() => setSel(b.id)}
+              >
+                Lote #{b.id}
+                {s.alerts.some((a) => a.packLotId === b.id) ? " · ⚠" : ""}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <h2>Lotes</h2>
+      {lot && (
+        <div className="duo">
+          {/* Discrepancia de balance de masa */}
+          <div className={`card big ${hayDiscrepancia ? "discrep" : ""}`}>
+            <span className={`badge ${hayDiscrepancia ? "red" : "green"}`}>
+              {hayDiscrepancia ? "Discrepancia activa" : "Sin discrepancias"}
+            </span>
+            <div className="bignum">
+              {hayDiscrepancia
+                ? `${fmt(packsSinDeclarar)} packs sin declarar`
+                : `${fmt(lot.packs)} packs verificados`}
+            </div>
+            <p className="meta">
+              Entraron {fmt(lot.kg)} kg de tabaco; con {s.kgPorPack} kg/pack se
+              esperaban ~{fmt(packsEsperados)} packs. La cigarrera declaró{" "}
+              {fmt(lot.packs)} a {lot.pricePerPack} mUSD c/u
+              {pctPrecio !== 0 &&
+                ` — ${Math.abs(pctPrecio)}% por ${
+                  pctPrecio > 0 ? "debajo" : "encima"
+                } de la referencia`}
+              .
+            </p>
+            <Bar label="Packs esperados" value={packsEsperados} max={packsEsperados} />
+            <Bar
+              label="Packs declarados"
+              value={lot.packs}
+              max={Math.max(packsEsperados, lot.packs)}
+              danger={lot.packs !== packsEsperados}
+            />
+            <Bar label="Precio de referencia" value={s.refPricePack} max={s.refPricePack} />
+            <Bar
+              label="Precio declarado"
+              value={parseFloat(lot.pricePerPack)}
+              max={s.refPricePack}
+              danger={pctPrecio !== 0}
+            />
+            {lotAlerts.some((a) => a.onchainTx) && (
+              <a
+                className="btnlink"
+                href={`${s.explorerBase}${lotAlerts.find((a) => a.onchainTx).onchainTx}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Ver firma en el explorador →
+              </a>
+            )}
+          </div>
+
+          {/* FET */}
+          <div className="card big">
+            <h3>Fondo Especial del Tabaco</h3>
+            <p className="meta">Aporte del {s.fetRateBps}% sobre packs × precio.</p>
+            {contrib ? (
+              <>
+                <div className="fetnums">
+                  <div>
+                    <div className="l">Correspondía</div>
+                    <div className="v">${fmt(contrib.expected)}</div>
+                  </div>
+                  <div>
+                    <div className="l">Depositado</div>
+                    <div className="v">${fmt(contrib.deposited)}</div>
+                  </div>
+                  <div>
+                    <div className="l">Diferencia</div>
+                    <div className="v" style={{ color: diferenciaFet > 0 ? "#f87171" : "#b49dff" }}>
+                      ${fmt(diferenciaFet)}
+                    </div>
+                  </div>
+                </div>
+                <div className="splitbar">
+                  <span style={{ width: `${s.split.productores}%`, background: "#836ef9" }} />
+                  <span style={{ width: `${s.split.social}%`, background: "#34d399" }} />
+                  <span style={{ width: `${s.split.municipios}%`, background: "#565280" }} />
+                </div>
+                <div className="splitlabels">
+                  <span>Productores {s.split.productores}%</span>
+                  <span>Seguridad social {s.split.social}%</span>
+                  <span>Municipios {s.split.municipios}%</span>
+                </div>
+                <p className="meta">Los porcentajes están fijos en el contrato. Nadie — ni la plataforma — puede retener ni redirigir el depósito.</p>
+              </>
+            ) : (
+              <p className="meta">Este lote todavía no declaró aporte al FET.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {lot && (
+        <div className="card big">
+          <h3>Cadena del lote</h3>
+          <p className="meta">Cada paso lo firman quien entrega y quien recibe.</p>
+          <div className={`chainline ${hayDiscrepancia ? "withred" : ""}`} />
+          <div className="chaincols">
+            <div>
+              <b>Productor</b>
+              <div className="meta">{leaf ? `${fmt(leaf.kg)} kg` : "—"}</div>
+              <div className="mono dim">{leaf ? leaf.holder.slice(0, 10) + "…" : ""}</div>
+            </div>
+            <div>
+              <b>Acopio</b>
+              <div className="meta">{proc ? `Recibió · salió ${fmt(proc.kg)} kg` : "—"}</div>
+              <div className="mono dim">{proc ? proc.holder.slice(0, 10) + "…" : ""}</div>
+            </div>
+            <div>
+              <b>Cigarrera</b>
+              <div className="meta">{fmt(lot.packs)} packs declarados</div>
+              <div className="mono dim">{lot.holder.slice(0, 10)}…</div>
+            </div>
+            <div>
+              <b>Pack con QR</b>
+              <div className="meta"><a href={`/lote/${lot.id}`}>/lote/SLT-{String(lot.id).padStart(4, "0")}</a></div>
+              <div className="meta">verificable por cualquiera</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <h2>Todos los lotes</h2>
       <div className="card">
         <table>
           <thead>
-            <tr><th>#</th><th>Etapa</th><th>Titular</th><th>Kg</th><th>Packs</th><th>Precio/pack</th><th>Estado</th><th>Insumos</th></tr>
+            <tr><th>#</th><th>Etapa</th><th>Titular</th><th>Kg</th><th>Packs</th><th>Estado</th><th>Insumos</th></tr>
           </thead>
           <tbody>
             {s.batches.map((b) => (
@@ -77,33 +249,9 @@ export default function Dashboard() {
                 <td><span className={`pill ${stagePill(b.stage)}`}>{b.stage}</span></td>
                 <td>{b.holderName}</td>
                 <td>{b.kg || "—"}</td>
-                <td>{b.packs ? b.packs.toLocaleString("es-AR") : "—"}</td>
-                <td>{b.stageN === 2 ? `${b.pricePerPack} mUSD` : "—"}</td>
+                <td>{b.packs ? fmt(b.packs) : "—"}</td>
                 <td>{b.status}</td>
                 <td className="mono">{b.inputs.length ? b.inputs.map((i) => `#${i}`).join(", ") : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <h2>Aportes al FET (alícuota {s.fetRateBps}%)</h2>
-      <div className="card">
-        <table>
-          <thead>
-            <tr><th>Lote packs</th><th>Pagador</th><th>Esperado</th><th>Depositado</th><th>¿Cierra?</th><th>Reparto 60/30/10</th></tr>
-          </thead>
-          <tbody>
-            {s.contributions.map((c) => (
-              <tr key={c.packLotId}>
-                <td><a href={`/lote/${c.packLotId}`}>#{c.packLotId}</a></td>
-                <td>{c.payerName}</td>
-                <td>{parseFloat(c.expected).toLocaleString("es-AR")} mUSD</td>
-                <td>{parseFloat(c.deposited).toLocaleString("es-AR")} mUSD</td>
-                <td className={c.discrepancy ? "bad" : "ok"}>{c.discrepancy ? "DISCREPANCIA" : "OK"}</td>
-                <td className="mono">
-                  {c.reparto ? `${c.reparto.productores} / ${c.reparto.social} / ${c.reparto.municipios}` : "sin repartir"}
-                </td>
               </tr>
             ))}
           </tbody>
@@ -123,10 +271,6 @@ export default function Dashboard() {
           </tbody>
         </table>
       </div>
-
-      <p className="sub" style={{ marginTop: 18 }}>
-        Contratos — batches {s.contracts.batches.slice(0, 10)}… · vault {s.contracts.vault.slice(0, 10)}… · alerts {s.contracts.alerts?.slice(0, 10)}…
-      </p>
     </>
   );
 }

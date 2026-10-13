@@ -56,7 +56,7 @@ export default function Acciones() {
     <>
       <h1>Acciones por rol</h1>
       <div className="sub">
-        Operás como: <b>{actor?.name}</b>{" "}
+        // operás como: <b>{actor?.name}</b>{" "}
         <span className="mono">({actor?.address?.slice(0, 10)}…)</span>
       </div>
 

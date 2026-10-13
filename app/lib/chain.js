@@ -44,6 +44,9 @@ const STAGE_NAME = { 0: "Hoja", 1: "Procesado", 2: "Packs" };
 const STATUS_NAME = { 0: "Activo", 1: "En tránsito", 2: "Consumido" };
 const ROLE_NAME = { 1: "Productor", 2: "Acopio", 3: "Cigarrera", 4: "Inspector" };
 const KG_POR_PACK = 0.02; // mismo supuesto declarado del monitor
+// Precio de referencia de mercado por pack (supuesto declarado, paramétrico).
+// Sirve para comparar contra lo que la cigarrera declara.
+const REF_PRICE_PACK = 2.1;
 
 let _cfg;
 function cfg() {
@@ -214,13 +217,31 @@ async function getState() {
       alerts: c.alerts, token: c.token,
     },
     fetRateBps: Number(await vault.fetRateBps()) / 100,
+    refPricePack: REF_PRICE_PACK,
+    kgPorPack: KG_POR_PACK,
+    explorerBase:
+      process.env.EXPLORER_BASE ||
+      c.explorerBase ||
+      "https://testnet.monadexplorer.com/tx/",
+    split: { productores: 60, social: 30, municipios: 10 },
   };
 }
 
 async function doAction(action, params) {
   const c = cfg();
   const p = provider();
-  const signer = await p.getSigner(params.from); // cuenta desbloqueada (local)
+  // Firma: en local el nodo tiene cuentas desbloqueadas; en testnet usamos las
+  // keys de actores generadas por deploy-testnet.js (gitignored, solo demo).
+  let signer;
+  const keysPath = path.join(process.cwd(), "..", "worker", "keys-testnet.json");
+  if (fs.existsSync(keysPath)) {
+    const keys = JSON.parse(fs.readFileSync(keysPath, "utf8"));
+    const key = Object.values(keys).find(
+      (k) => new ethers.Wallet(k).address.toLowerCase() === params.from?.toLowerCase()
+    );
+    if (key) signer = new ethers.Wallet(key, p);
+  }
+  if (!signer) signer = await p.getSigner(params.from);
   const batches = new ethers.Contract(c.batches, BATCHES_ABI, signer);
   const vault = new ethers.Contract(c.vault, VAULT_ABI, signer);
   const token = new ethers.Contract(c.token, TOKEN_ABI, signer);

@@ -4,6 +4,7 @@
 !.env.example
 worker/deployed.json
 worker/alerts.json
+worker/keys-testnet.json
 
 # Dependencias y builds
 node_modules/

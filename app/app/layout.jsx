@@ -14,9 +14,9 @@ export default function RootLayout({ children }) {
             TRAZANO<span>· trazabilidad tabaco</span>
           </a>
           <div className="navlinks">
-            <a href="/">Panel inspector</a>
-            <a href="/acciones">Acciones por rol</a>
-            <a href="/lote/6">Ver pack (QR)</a>
+            <a href="/">Inspector</a>
+            <a href="/acciones">Acciones</a>
+            <a href="/lote/6">Pack público</a>
           </div>
         </nav>
         <main>{children}</main>
