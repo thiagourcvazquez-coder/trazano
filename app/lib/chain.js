@@ -61,6 +61,8 @@ function cfg() {
           vault: process.env.FET_VAULT,
           alerts: process.env.ALERT_REGISTRY,
           token: process.env.TOKEN,
+          deployBlock: Number(process.env.DEPLOY_BLOCK || 0) || undefined,
+          explorerBase: process.env.EXPLORER_BASE,
         };
   }
   return _cfg;
