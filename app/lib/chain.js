@@ -72,18 +72,26 @@ function provider() {
 
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "?");
 
-// Monad testnet limita eth_getLogs a ~100 bloques por llamada y rate-limita
-// el RPC público: paginamos desde el bloque de deploy con pacing.
+// Monad testnet limita eth_getLogs a ~100 bloques por llamada y el RPC
+// público a ~25 req/s: traemos TODOS los eventos en una sola pasada
+// paginada (eth_getLogs admite array de addresses + topics OR) y después
+// decodificamos cada log con el contrato correspondiente.
 const LOG_CHUNK = 99;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function queryPaged(contract, filter, fromBlock = 0) {
-  const p = contract.runner?.provider ?? contract.provider;
-  const latest = await p.getBlockNumber();
+async function allLogs(provider, addresses, topics0, fromBlock) {
+  const latest = await provider.getBlockNumber();
   const out = [];
   for (let from = fromBlock; from <= latest; from += LOG_CHUNK) {
     const to = Math.min(from + LOG_CHUNK - 1, latest);
-    out.push(...await contract.queryFilter(filter, from, to));
-    await sleep(60);
+    out.push(
+      ...await provider.getLogs({
+        address: addresses,
+        topics: [topics0],
+        fromBlock: from,
+        toBlock: to,
+      })
+    );
+    await sleep(80);
   }
   return out;
 }
@@ -104,13 +112,39 @@ async function getState() {
   const alertsC = c.alerts ? new ethers.Contract(c.alerts, ALERTS_ABI, p) : null;
 
   const from = c.deployBlock || 0;
-  // secuencial para no saturar el rate limit del RPC público
-  const actorEvents = await queryPaged(actors, actors.filters.ActorRegistered(), from);
-  const created = await queryPaged(batches, batches.filters.BatchCreated(), from);
-  const requested = await queryPaged(batches, batches.filters.TransferRequested(), from);
-  const contribs = await queryPaged(vault, vault.filters.ContributionRecorded(), from);
-  const dists = await queryPaged(vault, vault.filters.Distributed(), from);
-  const raised = alertsC ? await queryPaged(alertsC, alertsC.filters.AlertRaised(), from) : [];
+  const targets = [
+    { c: actors, name: "ActorRegistered" },
+    { c: batches, name: "BatchCreated" },
+    { c: batches, name: "TransferRequested" },
+    { c: vault, name: "ContributionRecorded" },
+    { c: vault, name: "Distributed" },
+    ...(alertsC ? [{ c: alertsC, name: "AlertRaised" }] : []),
+  ];
+  const topics0 = targets.map((t) => t.c.interface.getEvent(t.name).topicHash);
+  const byTopic = {};
+  for (const t of targets) byTopic[t.c.interface.getEvent(t.name).topicHash] = t;
+  const logs = await allLogs(
+    p,
+    targets.map((t) => t.c.target),
+    topics0,
+    from
+  );
+  const buckets = {};
+  for (const l of logs) {
+    const t = byTopic[l.topics[0]];
+    if (!t) continue;
+    (buckets[t.name] ||= []).push({
+      args: t.c.interface.parseLog(l).args,
+      transactionHash: l.transactionHash,
+      blockNumber: l.blockNumber,
+    });
+  }
+  const actorEvents = buckets.ActorRegistered || [];
+  const created = buckets.BatchCreated || [];
+  const requested = buckets.TransferRequested || [];
+  const contribs = buckets.ContributionRecorded || [];
+  const dists = buckets.Distributed || [];
+  const raised = buckets.AlertRaised || [];
 
   const actorMap = {};
   for (const e of actorEvents) {
@@ -201,6 +235,8 @@ async function getState() {
   }
 
   // alertas elevadas onchain por el inspector (verificables en el explorador)
+  // dedupe: la primera emisión por (tipo, lote) es la que cuenta
+  const seenAlert = new Set();
   const onchainAlerts = raised.map((e) => {
     const [idx, packLotId, typeHash, , inspector] = e.args;
     return {
@@ -211,6 +247,11 @@ async function getState() {
       inspectorName: actorMap[inspector.toLowerCase()]?.name || short(inspector),
       txHash: e.transactionHash,
     };
+  }).filter((o) => {
+    const key = `${o.type}:${o.packLotId}`;
+    if (seenAlert.has(key)) return false;
+    seenAlert.add(key);
+    return true;
   });
   // marcar cuáles alertas detectadas ya están onchain
   for (const a of alerts) {

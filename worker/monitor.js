@@ -36,6 +36,7 @@ const ALERTS_ABI = [
   "function raiseAlert(uint256 packLotId, bytes32 alertType, bytes32 detailsHash) returns (uint256)",
   "event AlertRaised(uint256 indexed alertIndex, uint256 indexed packLotId, bytes32 alertType, bytes32 detailsHash, address indexed inspector)",
 ];
+const ALERT_TYPES = ["BALANCE_DE_MASA", "FET_INCOMPLETO"];
 
 function loadConfig() {
   const p = path.join(__dirname, "deployed.json");
@@ -51,18 +52,25 @@ function loadConfig() {
   };
 }
 
-// Monad testnet limita eth_getLogs a ~100 bloques por llamada y rate-limita
-// el RPC público: paginamos desde el bloque de deploy con pacing.
+// Monad testnet limita eth_getLogs a ~100 bloques por llamada y el RPC
+// público a ~25 req/s: una sola pasada paginada con array de addresses +
+// topics OR, después decodificamos cada log con su contrato.
 const LOG_CHUNK = 99;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function queryPaged(contract, filter, fromBlock = 0) {
-  const provider = contract.runner?.provider ?? contract.provider;
+async function allLogs(provider, addresses, topics0, fromBlock) {
   const latest = await provider.getBlockNumber();
   const out = [];
   for (let from = fromBlock; from <= latest; from += LOG_CHUNK) {
     const to = Math.min(from + LOG_CHUNK - 1, latest);
-    out.push(...await contract.queryFilter(filter, from, to));
-    await sleep(60);
+    out.push(
+      ...await provider.getLogs({
+        address: addresses,
+        topics: [topics0],
+        fromBlock: from,
+        toBlock: to,
+      })
+    );
+    await sleep(80);
   }
   return out;
 }
@@ -111,10 +119,29 @@ async function scan(cfg, provider, knownAlerts) {
     ? await provider.getTransactionCount(inspectorWallet.address, "pending")
     : null;
 
-  const created = await queryPaged(batches, batches.filters.BatchCreated(), cfg.deployBlock);
-  const contribsEv = vault
-    ? await queryPaged(vault, vault.filters.ContributionRecorded(), cfg.deployBlock)
-    : [];
+  const batchTopic = batches.interface.getEvent("BatchCreated").topicHash;
+  const contribTopic = vault
+    ? vault.interface.getEvent("ContributionRecorded").topicHash
+    : null;
+  const alertTopic = alertContract
+    ? alertContract.interface.getEvent("AlertRaised").topicHash
+    : null;
+
+  const addrs = [cfg.batches, cfg.vault, alertContract ? cfg.alerts : null].filter(Boolean);
+  const topics = [batchTopic, contribTopic, alertTopic].filter(Boolean);
+  const logs = await allLogs(provider, addrs, topics, cfg.deployBlock || 0);
+
+  const created = [], contribsEv = [], raisedEv = [];
+  for (const l of logs) {
+    const t = l.topics[0];
+    if (t === batchTopic) {
+      created.push({ args: batches.interface.parseLog(l).args });
+    } else if (t === contribTopic) {
+      contribsEv.push({ args: vault.interface.parseLog(l).args });
+    } else if (t === alertTopic) {
+      raisedEv.push({ args: alertContract.interface.parseLog(l).args });
+    }
+  }
 
   const batchMap = new Map();
   for (const e of created) {
@@ -131,11 +158,25 @@ async function scan(cfg, provider, knownAlerts) {
 
   const alerts = detect(batchMap, contribs);
 
+  // Ya elevadas onchain (dedupe entre corridas)
+  for (const e of raisedEv) {
+    const packLotId = Number(e.args[1]);
+    const typeHash = e.args[2];
+    for (const t of ALERT_TYPES) {
+      if (ethers.keccak256(ethers.toUtf8Bytes(t)) === typeHash) {
+        knownAlerts.add(`${t}:${packLotId}`);
+      }
+    }
+  }
+
   // Elevar onchain solo las nuevas (clave = tipo+lote)
   if (alertContract) {
     for (const a of alerts) {
       const key = `${a.type}:${a.packLotId}`;
-      if (knownAlerts.has(key)) continue;
+      if (knownAlerts.has(key)) {
+        a.onchain = "ya emitida";
+        continue;
+      }
       const detailsHash = ethers.keccak256(
         ethers.toUtf8Bytes(JSON.stringify(a))
       );
