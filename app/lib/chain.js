@@ -71,6 +71,22 @@ function provider() {
 }
 
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "?");
+
+// Monad testnet limita eth_getLogs a ~100 bloques por llamada y rate-limita
+// el RPC público: paginamos desde el bloque de deploy con pacing.
+const LOG_CHUNK = 99;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function queryPaged(contract, filter, fromBlock = 0) {
+  const p = contract.runner?.provider ?? contract.provider;
+  const latest = await p.getBlockNumber();
+  const out = [];
+  for (let from = fromBlock; from <= latest; from += LOG_CHUNK) {
+    const to = Math.min(from + LOG_CHUNK - 1, latest);
+    out.push(...await contract.queryFilter(filter, from, to));
+    await sleep(60);
+  }
+  return out;
+}
 const decodeAlertType = (h) => {
   // keccak256 no es reversible; comparamos contra los tipos conocidos
   for (const t of ["BALANCE_DE_MASA", "FET_INCOMPLETO"]) {
@@ -87,15 +103,14 @@ async function getState() {
   const vault = new ethers.Contract(c.vault, VAULT_ABI, p);
   const alertsC = c.alerts ? new ethers.Contract(c.alerts, ALERTS_ABI, p) : null;
 
-  const [actorEvents, created, requested, contribs, dists, raised] =
-    await Promise.all([
-      actors.queryFilter(actors.filters.ActorRegistered()),
-      batches.queryFilter(batches.filters.BatchCreated()),
-      batches.queryFilter(batches.filters.TransferRequested()),
-      vault.queryFilter(vault.filters.ContributionRecorded()),
-      vault.queryFilter(vault.filters.Distributed()),
-      alertsC ? alertsC.queryFilter(alertsC.filters.AlertRaised()) : [],
-    ]);
+  const from = c.deployBlock || 0;
+  // secuencial para no saturar el rate limit del RPC público
+  const actorEvents = await queryPaged(actors, actors.filters.ActorRegistered(), from);
+  const created = await queryPaged(batches, batches.filters.BatchCreated(), from);
+  const requested = await queryPaged(batches, batches.filters.TransferRequested(), from);
+  const contribs = await queryPaged(vault, vault.filters.ContributionRecorded(), from);
+  const dists = await queryPaged(vault, vault.filters.Distributed(), from);
+  const raised = alertsC ? await queryPaged(alertsC, alertsC.filters.AlertRaised(), from) : [];
 
   const actorMap = {};
   for (const e of actorEvents) {

@@ -20,7 +20,7 @@ const path = require("path");
 const ROLE = { PRODUCER: 1, ACOPIO: 2, CIGARRERA: 3, INSPECTOR: 4 };
 const MUSD = (n) => BigInt(n) * 1_000_000n;
 const hash = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
-const GAS_TOPUP = ethers.parseEther("0.02"); // MON por actor para gas
+const GAS_TOPUP = ethers.parseEther("0.25"); // MON por actor (gas ~102 gwei)
 
 async function main() {
   const [deployer] = await ethers.getSigners();
@@ -106,6 +106,7 @@ async function main() {
   // 5. Salidas
   const deployed = {
     rpcUrl: "https://testnet-rpc.monad.xyz",
+    deployBlock: await provider.getBlockNumber() - 60,
     explorerBase: "https://testnet.monadexplorer.com/tx/",
     actors: await actors.getAddress(),
     batches: await batches.getAddress(),

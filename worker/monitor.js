@@ -46,7 +46,25 @@ function loadConfig() {
     vault: process.env.FET_VAULT || file.vault,
     alerts: process.env.ALERT_REGISTRY || file.alerts,
     inspectorKey: process.env.INSPECTOR_KEY || file.inspectorKey || null,
+    deployBlock:
+      Number(process.env.DEPLOY_BLOCK || file.deployBlock || 0) || undefined,
   };
+}
+
+// Monad testnet limita eth_getLogs a ~100 bloques por llamada y rate-limita
+// el RPC público: paginamos desde el bloque de deploy con pacing.
+const LOG_CHUNK = 99;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function queryPaged(contract, filter, fromBlock = 0) {
+  const provider = contract.runner?.provider ?? contract.provider;
+  const latest = await provider.getBlockNumber();
+  const out = [];
+  for (let from = fromBlock; from <= latest; from += LOG_CHUNK) {
+    const to = Math.min(from + LOG_CHUNK - 1, latest);
+    out.push(...await contract.queryFilter(filter, from, to));
+    await sleep(60);
+  }
+  return out;
 }
 
 function detect(batchMap, contribs) {
@@ -93,9 +111,9 @@ async function scan(cfg, provider, knownAlerts) {
     ? await provider.getTransactionCount(inspectorWallet.address, "pending")
     : null;
 
-  const created = await batches.queryFilter(batches.filters.BatchCreated());
+  const created = await queryPaged(batches, batches.filters.BatchCreated(), cfg.deployBlock);
   const contribsEv = vault
-    ? await vault.queryFilter(vault.filters.ContributionRecorded())
+    ? await queryPaged(vault, vault.filters.ContributionRecorded(), cfg.deployBlock)
     : [];
 
   const batchMap = new Map();
