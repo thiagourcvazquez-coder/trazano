@@ -80,7 +80,7 @@ export default function Dashboard() {
   const lotAlerts = lot ? s.alerts.filter((a) => a.packLotId === lot.id) : [];
 
   const packsEsperados = lot ? Math.floor(lot.kg / s.kgPorPack) : 0;
-  const packsSinDeclarar = Math.max(0, packsEsperados - (lot?.packs || 0));
+  const packsSinDeclarar = Math.max(0, (lot?.packs || 0) - packsEsperados);
   const diferenciaFet = contrib
     ? Math.max(0, parseFloat(contrib.expected) - parseFloat(contrib.deposited))
     : 0;
@@ -126,7 +126,7 @@ export default function Dashboard() {
             </span>
             <div className="bignum">
               {hayDiscrepancia
-                ? `${fmt(packsSinDeclarar)} packs sin declarar`
+                ? `${fmt(packsSinDeclarar)} packs sin respaldo`
                 : `${fmt(lot.packs)} packs verificados`}
             </div>
             <p className="meta">
