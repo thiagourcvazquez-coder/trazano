@@ -1,0 +1,13 @@
+{
+  "name": "trazano-worker",
+  "version": "0.2.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "monitor": "node monitor.js",
+    "monitor:once": "node monitor.js --once"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0"
+  }
+}

@@ -1,0 +1,19 @@
+# Secretos y generados: nunca al repo
+.env
+.env.*
+!.env.example
+worker/deployed.json
+worker/alerts.json
+
+# Dependencias y builds
+node_modules/
+.next/
+out/
+dist/
+build/
+cache/
+artifacts/
+coverage/
+.DS_Store
+Thumbs.db
+*.log
